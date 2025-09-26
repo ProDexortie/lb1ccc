@@ -58,26 +58,28 @@ void init_message(Message * msg, int type, uint16_t payload_len) {
     msg->s_header.s_local_time = increment_lamport_time(); // Use Lamport time and increment
 }
 
-// Update balance history for a time period
+// Update balance history - ensure continuous time progression
 void update_balance_history(ChildData * child, balance_t new_balance, balance_t pending_amount) {
     timestamp_t current_time = get_lamport_time();
     
-    // Fill in the time progression correctly - limit to MAX_T (127 for signed int8_t)
-    while (child->current_time <= current_time && child->current_time <= 127) {
-        child->history.s_history[child->current_time].s_time = child->current_time;
-        child->history.s_history[child->current_time].s_balance = (child->current_time == current_time) ? new_balance : child->balance;
-        child->history.s_history[child->current_time].s_balance_pending_in = (child->current_time == current_time) ? pending_amount : child->pending_in;
-        
-        child->current_time++;
+    // Fill all slots from where we left off to current time
+    timestamp_t start_time = child->current_time;
+    if (start_time > current_time) start_time = current_time; // Handle edge case
+    
+    for (timestamp_t t = start_time; t <= current_time && t <= 127; t++) {
+        child->history.s_history[t].s_time = t;
+        child->history.s_history[t].s_balance = (t == current_time) ? new_balance : child->balance;
+        child->history.s_history[t].s_balance_pending_in = (t == current_time) ? pending_amount : child->pending_in;
     }
     
-    // Update the balance and pending amount
+    // Update tracking variables
     child->balance = new_balance;
     child->pending_in = pending_amount;
+    child->current_time = current_time + 1; // Next time slot to fill
     
-    // Update history length
-    if (child->current_time > child->history.s_history_len) {
-        child->history.s_history_len = (child->current_time <= 127) ? child->current_time : 128;
+    // Update history length - limit to reasonable size
+    if (current_time + 1 > child->history.s_history_len) {
+        child->history.s_history_len = (current_time + 1 > 20) ? 20 : current_time + 1;
     }
 }
 
@@ -214,8 +216,6 @@ void parent_main(int num_children) {
                     if (history.s_id > 0 && history.s_id <= MAX_PROCESS_ID && history.s_id <= num_children) {
                         memcpy(&all_history.s_history[history.s_id], &history, sizeof(BalanceHistory));
                         history_count++;
-                        // Debug print
-                        fprintf(stderr, "Collected history for process %d, len=%d\n", history.s_id, history.s_history_len);
                     }
                 }
             }
@@ -226,7 +226,6 @@ void parent_main(int num_children) {
     }
     
     // Print history
-    fprintf(stderr, "About to print history with s_history_len=%d\n", all_history.s_history_len);
     print_history(&all_history);
 }
 
