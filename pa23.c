@@ -20,41 +20,64 @@
 // Global IPC context
 IPC ipc_ctx;
 
+// Global Lamport clock for this process
+static timestamp_t lamport_clock = 0;
+
 // Process data for child
 typedef struct {
     local_id id;
     balance_t balance;
     BalanceHistory history;
     timestamp_t current_time;
+    balance_t pending_in;  // Track money in transit
 } ChildData;
+
+// Lamport clock functions
+timestamp_t get_lamport_time(void) {
+    return lamport_clock;
+}
+
+// Increment Lamport clock before sending
+timestamp_t increment_lamport_time(void) {
+    return ++lamport_clock;
+}
+
+// Update Lamport clock on message receipt  
+void update_lamport_time(timestamp_t received_time) {
+    if (received_time > lamport_clock) {
+        lamport_clock = received_time;
+    }
+    lamport_clock++;
+}
 
 // Initialize message with header
 void init_message(Message * msg, int type, uint16_t payload_len) {
     msg->s_header.s_magic = 0;  // Can be used for validation
     msg->s_header.s_payload_len = payload_len;
     msg->s_header.s_type = type;
-    msg->s_header.s_local_time = get_physical_time();
+    msg->s_header.s_local_time = increment_lamport_time(); // Use Lamport time and increment
 }
 
 // Update balance history for a time period
-void update_balance_history(ChildData * child, balance_t new_balance) {
-    timestamp_t current_time = get_physical_time();
+void update_balance_history(ChildData * child, balance_t new_balance, balance_t pending_amount) {
+    timestamp_t current_time = get_lamport_time();
     
-    // Fill in the time progression correctly
-    while (child->current_time <= current_time && child->current_time < MAX_T) {
+    // Fill in the time progression correctly - limit to MAX_T (127 for signed int8_t)
+    while (child->current_time <= current_time && child->current_time <= 127) {
         child->history.s_history[child->current_time].s_time = child->current_time;
         child->history.s_history[child->current_time].s_balance = (child->current_time == current_time) ? new_balance : child->balance;
-        child->history.s_history[child->current_time].s_balance_pending_in = 0; // Always 0 for PA2
+        child->history.s_history[child->current_time].s_balance_pending_in = (child->current_time == current_time) ? pending_amount : child->pending_in;
         
         child->current_time++;
     }
     
-    // Update the balance
+    // Update the balance and pending amount
     child->balance = new_balance;
+    child->pending_in = pending_amount;
     
     // Update history length
     if (child->current_time > child->history.s_history_len) {
-        child->history.s_history_len = (child->current_time <= MAX_T) ? child->current_time : MAX_T + 1;
+        child->history.s_history_len = (child->current_time <= 127) ? child->current_time : 128;
     }
 }
 
@@ -64,20 +87,21 @@ void child_main(local_id id, balance_t initial_balance) {
     child.id = id;
     child.balance = initial_balance;
     child.current_time = 0;
+    child.pending_in = 0;
     child.history.s_id = id;
     child.history.s_history_len = 1;
     
     ipc_ctx.id = id;
     
     // Initialize balance history with initial balance
-    update_balance_history(&child, initial_balance);
+    update_balance_history(&child, initial_balance, 0);
     
     // Send STARTED message
     Message msg;
     init_message(&msg, STARTED, 0);
     send_multicast(&ipc_ctx, &msg);
     
-    printf(log_started_fmt, get_physical_time(), id, getpid(), getppid(), initial_balance);
+    printf(log_started_fmt, get_lamport_time(), id, getpid(), getppid(), initial_balance);
     
     // Main loop - receive messages
     int done = 0;
@@ -90,16 +114,17 @@ void child_main(local_id id, balance_t initial_balance) {
                     
                     if (order->s_src == id) {
                         // This is source - decrease balance and forward
-                        update_balance_history(&child, child.balance - order->s_amount);
-                        printf(log_transfer_out_fmt, get_physical_time(), id, order->s_amount, order->s_dst);
+                        update_balance_history(&child, child.balance - order->s_amount, child.pending_in);
+                        printf(log_transfer_out_fmt, get_lamport_time(), id, order->s_amount, order->s_dst);
                         
                         // Forward to destination
                         send(&ipc_ctx, order->s_dst, &received_msg);
                         
                     } else if (order->s_dst == id) {
                         // This is destination - increase balance and send ACK
-                        update_balance_history(&child, child.balance + order->s_amount);
-                        printf(log_transfer_in_fmt, get_physical_time(), id, order->s_amount, order->s_src);
+                        // No pending money since we received it
+                        update_balance_history(&child, child.balance + order->s_amount, 0);
+                        printf(log_transfer_in_fmt, get_lamport_time(), id, order->s_amount, order->s_src);
                         
                         // Send ACK to parent
                         Message ack_msg;
@@ -116,10 +141,11 @@ void child_main(local_id id, balance_t initial_balance) {
         usleep(1000); // Small delay to prevent busy waiting
     }
     
-    // Send DONE message
+    // Send DONE message and update history one more time 
     init_message(&msg, DONE, 0);
+    update_balance_history(&child, child.balance, child.pending_in); // Ensure final state is recorded
     send_multicast(&ipc_ctx, &msg);
-    printf(log_done_fmt, get_physical_time(), id, child.balance);
+    printf(log_done_fmt, get_lamport_time(), id, child.balance);
     
     // Send BALANCE_HISTORY to parent - send it directly via pipe without using message structure
     int parent_pipe = ipc_ctx.pipes[child.id][PARENT_ID][1];
@@ -146,7 +172,7 @@ void parent_main(int num_children) {
         usleep(1000);
     }
     
-    printf(log_received_all_started_fmt, get_physical_time(), PARENT_ID);
+    printf(log_received_all_started_fmt, get_lamport_time(), PARENT_ID);
     
     // Run bank robbery
     bank_robbery(&ipc_ctx, num_children);
@@ -168,7 +194,7 @@ void parent_main(int num_children) {
         usleep(1000);
     }
     
-    printf(log_received_all_done_fmt, get_physical_time(), PARENT_ID);
+    printf(log_received_all_done_fmt, get_lamport_time(), PARENT_ID);
     
     // Collect all balance histories - read them directly
     AllHistory all_history;
@@ -188,6 +214,8 @@ void parent_main(int num_children) {
                     if (history.s_id > 0 && history.s_id <= MAX_PROCESS_ID && history.s_id <= num_children) {
                         memcpy(&all_history.s_history[history.s_id], &history, sizeof(BalanceHistory));
                         history_count++;
+                        // Debug print
+                        fprintf(stderr, "Collected history for process %d, len=%d\n", history.s_id, history.s_history_len);
                     }
                 }
             }
@@ -198,6 +226,7 @@ void parent_main(int num_children) {
     }
     
     // Print history
+    fprintf(stderr, "About to print history with s_history_len=%d\n", all_history.s_history_len);
     print_history(&all_history);
 }
 

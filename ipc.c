@@ -11,6 +11,9 @@
 #include <errno.h>
 #include <string.h>
 
+// External Lamport clock functions - implemented in pa23.c
+extern void update_lamport_time(timestamp_t received_time);
+
 int send(void * self, local_id dst, const Message * msg) {
     IPC * ipc = (IPC *)self;
     
@@ -76,6 +79,9 @@ int receive(void * self, local_id from, Message * msg) {
         }
     }
     
+    // Update Lamport clock on message receipt
+    update_lamport_time(msg->s_header.s_local_time);
+    
     return 0;
 }
 
@@ -86,7 +92,7 @@ int receive_any(void * self, Message * msg) {
     for (int from = 0; from < ipc->process_count; from++) {
         if (from != ipc->id) {
             if (receive(self, from, msg) == 0) {
-                return 0;
+                return 0; // Lamport clock already updated in receive()
             }
         }
     }
