@@ -20,6 +20,27 @@
 // Global IPC context
 IPC ipc_ctx;
 
+// Global Lamport clock
+static timestamp_t lamport_clock = 0;
+
+// Lamport clock functions
+timestamp_t get_lamport_time() {
+    return lamport_clock;
+}
+
+// Increment Lamport clock before sending
+void increment_lamport_clock() {
+    lamport_clock++;
+}
+
+// Update Lamport clock on message receipt
+void update_lamport_clock(timestamp_t received_time) {
+    if (received_time > lamport_clock) {
+        lamport_clock = received_time;
+    }
+    lamport_clock++;
+}
+
 // Process data for child
 typedef struct {
     local_id id;
@@ -30,21 +51,22 @@ typedef struct {
 
 // Initialize message with header
 void init_message(Message * msg, int type, uint16_t payload_len) {
+    increment_lamport_clock(); // Increment before sending
     msg->s_header.s_magic = 0;  // Can be used for validation
     msg->s_header.s_payload_len = payload_len;
     msg->s_header.s_type = type;
-    msg->s_header.s_local_time = get_physical_time();
+    msg->s_header.s_local_time = get_lamport_time();
 }
 
 // Update balance history for a time period
 void update_balance_history(ChildData * child, balance_t new_balance) {
-    timestamp_t current_time = get_physical_time();
+    timestamp_t current_time = get_lamport_time();
     
     // Fill in the time progression correctly
-    while (child->current_time <= current_time && child->current_time < MAX_T) {
+    while (child->current_time <= current_time && child->current_time <= MAX_T) {
         child->history.s_history[child->current_time].s_time = child->current_time;
         child->history.s_history[child->current_time].s_balance = (child->current_time == current_time) ? new_balance : child->balance;
-        child->history.s_history[child->current_time].s_balance_pending_in = 0; // Always 0 for PA2
+        child->history.s_history[child->current_time].s_balance_pending_in = 0; // Will be updated for PA3
         
         child->current_time++;
     }
@@ -77,7 +99,7 @@ void child_main(local_id id, balance_t initial_balance) {
     init_message(&msg, STARTED, 0);
     send_multicast(&ipc_ctx, &msg);
     
-    printf(log_started_fmt, get_physical_time(), id, getpid(), getppid(), initial_balance);
+    printf(log_started_fmt, get_lamport_time(), id, getpid(), getppid(), initial_balance);
     
     // Main loop - receive messages
     int done = 0;
@@ -91,7 +113,7 @@ void child_main(local_id id, balance_t initial_balance) {
                     if (order->s_src == id) {
                         // This is source - decrease balance and forward
                         update_balance_history(&child, child.balance - order->s_amount);
-                        printf(log_transfer_out_fmt, get_physical_time(), id, order->s_amount, order->s_dst);
+                        printf(log_transfer_out_fmt, get_lamport_time(), id, order->s_amount, order->s_dst);
                         
                         // Forward to destination
                         send(&ipc_ctx, order->s_dst, &received_msg);
@@ -99,7 +121,7 @@ void child_main(local_id id, balance_t initial_balance) {
                     } else if (order->s_dst == id) {
                         // This is destination - increase balance and send ACK
                         update_balance_history(&child, child.balance + order->s_amount);
-                        printf(log_transfer_in_fmt, get_physical_time(), id, order->s_amount, order->s_src);
+                        printf(log_transfer_in_fmt, get_lamport_time(), id, order->s_amount, order->s_src);
                         
                         // Send ACK to parent
                         Message ack_msg;
@@ -119,7 +141,7 @@ void child_main(local_id id, balance_t initial_balance) {
     // Send DONE message
     init_message(&msg, DONE, 0);
     send_multicast(&ipc_ctx, &msg);
-    printf(log_done_fmt, get_physical_time(), id, child.balance);
+    printf(log_done_fmt, get_lamport_time(), id, child.balance);
     
     // Send BALANCE_HISTORY to parent - send it directly via pipe without using message structure
     int parent_pipe = ipc_ctx.pipes[child.id][PARENT_ID][1];
@@ -146,7 +168,7 @@ void parent_main(int num_children) {
         usleep(1000);
     }
     
-    printf(log_received_all_started_fmt, get_physical_time(), PARENT_ID);
+    printf(log_received_all_started_fmt, get_lamport_time(), PARENT_ID);
     
     // Run bank robbery
     bank_robbery(&ipc_ctx, num_children);
@@ -168,7 +190,7 @@ void parent_main(int num_children) {
         usleep(1000);
     }
     
-    printf(log_received_all_done_fmt, get_physical_time(), PARENT_ID);
+    printf(log_received_all_done_fmt, get_lamport_time(), PARENT_ID);
     
     // Collect all balance histories - read them directly
     AllHistory all_history;
@@ -176,6 +198,8 @@ void parent_main(int num_children) {
     all_history.s_history_len = num_children;
     
     int history_count = 0;
+    printf("DEBUG: Starting to collect histories from %d children\n", num_children);
+    fflush(stdout);
     while (history_count < num_children) {
         // Try to read BalanceHistory directly from each child's pipe
         for (local_id i = 1; i <= num_children && history_count < num_children; i++) {
@@ -184,6 +208,8 @@ void parent_main(int num_children) {
                 BalanceHistory history;
                 ssize_t bytes_read = read(child_pipe, &history, sizeof(BalanceHistory));
                 if (bytes_read == sizeof(BalanceHistory)) {
+                    printf("DEBUG: Read history from child %d, id=%d, len=%d\n", i, history.s_id, history.s_history_len);
+                    fflush(stdout);
                     // Ensure we don't write out of bounds
                     if (history.s_id > 0 && history.s_id <= MAX_PROCESS_ID && history.s_id <= num_children) {
                         memcpy(&all_history.s_history[history.s_id], &history, sizeof(BalanceHistory));
@@ -196,9 +222,16 @@ void parent_main(int num_children) {
             usleep(1000);
         }
     }
+    printf("DEBUG: Collected %d histories\n", history_count);
+    fflush(stdout);
     
     // Print history
-    print_history(&all_history);
+    printf("DEBUG: About to call print_history with %d children\n", num_children);
+    fflush(stdout);
+    // FIXME: print_history causes segfault - need to debug balance history data
+    // print_history(&all_history);
+    printf("DEBUG: print_history skipped due to segfault\n");
+    fflush(stdout);
 }
 
 // Transfer implementation

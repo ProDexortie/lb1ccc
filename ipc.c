@@ -6,10 +6,14 @@
  */
 
 #include "ipc.h"
+#include "banking.h" // For Lamport clock functions
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <string.h>
+
+// External Lamport clock functions declared in pa23.c
+extern void update_lamport_clock(timestamp_t received_time);
 
 int send(void * self, local_id dst, const Message * msg) {
     IPC * ipc = (IPC *)self;
@@ -36,9 +40,19 @@ int send(void * self, local_id dst, const Message * msg) {
 int send_multicast(void * self, const Message * msg) {
     IPC * ipc = (IPC *)self;
     
+    // For multicast, send the same message (with same timestamp) to all processes
     for (int i = 0; i < ipc->process_count; i++) {
         if (i != ipc->id) {
-            if (send(self, i, msg) != 0) {
+            // Send message directly without incrementing clock again
+            int fd = ipc->pipes[ipc->id][i][1]; // write end
+            if (fd == -1) {
+                return -1;
+            }
+            
+            size_t total_len = sizeof(MessageHeader) + msg->s_header.s_payload_len;
+            
+            ssize_t bytes_written = write(fd, msg, total_len);
+            if (bytes_written != (ssize_t)total_len) {
                 return -1;
             }
         }
@@ -75,6 +89,9 @@ int receive(void * self, local_id from, Message * msg) {
             return -1;
         }
     }
+    
+    // Update Lamport clock on message receipt
+    update_lamport_clock(msg->s_header.s_local_time);
     
     return 0;
 }
