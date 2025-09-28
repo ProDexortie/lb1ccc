@@ -2,7 +2,9 @@ using UnityEngine;
 using UnityEngine.XR;
 using UnityEngine.XR.Interaction.Toolkit;
 
-public class VRPlayerController : MonoBehaviour
+namespace VRTrafficEdu
+{
+    public class VRPlayerController : MonoBehaviour
 {
     [Header("VR Setup")]
     public Transform cameraOffset;
@@ -130,4 +132,5 @@ public class VRPlayerController : MonoBehaviour
             transform.position = position;
         }
     }
+}
 }

@@ -1,6 +1,8 @@
 using UnityEngine;
 
-public class CityGenerator : MonoBehaviour
+namespace VRTrafficEdu
+{
+    public class CityGenerator : MonoBehaviour
 {
     [Header("City Layout")]
     public int citySize = 10;
@@ -233,4 +235,5 @@ public class CityGenerator : MonoBehaviour
             vehicle.waypoints = waypoints;
         }
     }
+}
 }

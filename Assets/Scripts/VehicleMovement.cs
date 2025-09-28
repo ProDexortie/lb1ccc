@@ -1,7 +1,9 @@
 using UnityEngine;
 using System.Collections;
 
-public class VehicleMovement : MonoBehaviour
+namespace VRTrafficEdu
+{
+    public class VehicleMovement : MonoBehaviour
 {
     [Header("Movement Settings")]
     public float speed = 5f;
@@ -111,4 +113,5 @@ public class VehicleMovement : MonoBehaviour
         yield return new WaitForSeconds(delay);
         ResumeVehicle();
     }
+}
 }

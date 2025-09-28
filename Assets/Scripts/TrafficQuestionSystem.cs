@@ -3,8 +3,10 @@ using UnityEngine.UI;
 using System.Collections.Generic;
 using System;
 
-[System.Serializable]
-public class TrafficQuestion
+namespace VRTrafficEdu
+{
+    [System.Serializable]
+    public class TrafficQuestion
 {
     public string question;
     public string[] answers;
@@ -165,4 +167,5 @@ public class TrafficQuestionSystem : MonoBehaviour
             button.image.color = Color.white;
         }
     }
+}
 }
